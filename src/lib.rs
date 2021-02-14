@@ -60,6 +60,7 @@ mod fxhash;
 mod raw_table;
 mod serialize;
 mod unhash;
+mod swisstable;
 
 pub use crate::fxhash::FxHashFn;
 pub use crate::unhash::UnHashFn;
