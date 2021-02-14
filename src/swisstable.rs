@@ -6,11 +6,15 @@ use crate::HashFn;
 use std::mem::size_of;
 use std::marker::PhantomData;
 
+use core::intrinsics::{likely, unlikely};
+
 type HashValue = u32;
 
 const GROUP_SIZE: usize = 16;
 
 const EMPTY_CONTROL_BYTE: u8 = 0b1000_0000;
+
+pub type EntryMetadata = u8;
 
 pub(crate) struct SwissTable<'a, K: ByteArray, V: ByteArray, H: HashFn> {
     control: &'a [u8],
@@ -34,82 +38,82 @@ fn is_empty_or_deleted(control_byte: u8) -> bool {
     (control_byte & EMPTY_CONTROL_BYTE) != 0
 }
 
-#[cfg(not(any(
-target_feature = "sse2",
-any(target_arch = "x86", target_arch = "x86_64"),
-not(miri)
-)))]
-mod group_query {
-    use super::*;
+// #[cfg(not(any(
+// target_feature = "sse2",
+// any(target_arch = "x86", target_arch = "x86_64"),
+// not(miri)
+// )))]
+// mod group_query {
+//     use super::*;
 
-    pub struct GroupQuery {
-        matches: Vec<usize>,
-        first_empty: Option<usize>,
-    }
+//     pub struct GroupQuery {
+//         matches: Vec<usize>,
+//         first_empty: Option<usize>,
+//     }
 
-    impl GroupQuery {
+//     impl GroupQuery {
 
-        pub fn from(group: &[u8; 16], h2: u8) -> GroupQuery {
-            debug_assert!(!is_empty_or_deleted(h2));
+//         pub fn from(group: &[u8; 16], h2: u8) -> GroupQuery {
+//             debug_assert!(!is_empty_or_deleted(h2));
 
-            let mut matches = Vec::new();
-            let mut first_empty = None;
+//             let mut matches = Vec::new();
+//             let mut first_empty = None;
 
-            for (i, &b) in group.iter().enumerate() {
-                if b == h2 {
-                    matches.push(i);
-                }
+//             for (i, &b) in group.iter().enumerate() {
+//                 if b == h2 {
+//                     matches.push(i);
+//                 }
 
-                if (b & 0b1000_0000) != 0 && first_empty.is_none() {
-                    first_empty = Some(i);
-                }
-            }
+//                 if (b & 0b1000_0000) != 0 && first_empty.is_none() {
+//                     first_empty = Some(i);
+//                 }
+//             }
 
-            GroupQuery {
-                matches,
-                first_empty,
-            }
-        }
+//             GroupQuery {
+//                 matches,
+//                 first_empty,
+//             }
+//         }
 
-        pub fn iter_matches(&self, mut f: impl FnMut(usize) -> bool) {
-            for &m in &self.matches {
-                if f(m) {
-                    return
-                }
-            }
-        }
+//         pub fn iter_matches(&self, mut f: impl FnMut(usize) -> bool) {
+//             for &m in &self.matches {
+//                 if f(m) {
+//                     return
+//                 }
+//             }
+//         }
 
-        pub fn matches_iter(&self) -> MatchesIter {
-            MatchesIter {
-                group_query: self,
-                index: 0,
-            }
-        }
+//         pub fn matches_iter(&self) -> MatchesIter {
+//             MatchesIter {
+//                 group_query: self,
+//                 index: 0,
+//             }
+//         }
 
-        pub fn any_empty(&self) -> bool {
-            self.first_empty.is_some()
-        }
+//         pub fn any_empty(&self) -> bool {
+//             self.first_empty.is_some()
+//         }
 
-        pub fn first_empty(&self) -> Option<usize> {
-            self.first_empty
-        }
-    }
+//         pub fn first_empty(&self) -> Option<usize> {
+//             self.first_empty
+//         }
+//     }
 
-    pub struct MatchesIter<'a> {
-        group_query: &'a GroupQuery,
-        index: usize,
-    }
+//     pub struct MatchesIter<'a> {
+//         group_query: &'a GroupQuery,
+//         index: usize,
+//     }
 
-    impl<'a> Iterator for MatchesIter<'a> {
-        type Item = usize;
+//     impl<'a> Iterator for MatchesIter<'a> {
+//         type Item = usize;
 
-        fn next(&mut self) -> Option<usize> {
-            let i = self.index;
-            self.index += 1;
-            self.group_query.matches.get(i).cloned()
-        }
-    }
-}
+//         fn next(&mut self) -> Option<usize> {
+//             let i = self.index;
+//             self.index += 1;
+//             self.group_query.matches.get(i).cloned()
+//         }
+//     }
+// }
 
 
 #[cfg(all(
@@ -124,8 +128,9 @@ mod group_query {
     use core::arch::x86_64 as x86;
 
      pub struct GroupQuery {
+        group: x86::__m128i,
         matches: u16,
-        empty: u16,
+        // empty: u16,
     }
 
     impl GroupQuery {
@@ -136,14 +141,12 @@ mod group_query {
                 let group = x86::_mm_loadu_si128(group as *const _ as *const x86::__m128i);
                 let cmp_byte = x86::_mm_cmpeq_epi8(group, x86::_mm_set1_epi8(h2 as i8));
                 let matches = x86::_mm_movemask_epi8(cmp_byte) as u16;
-                let empty = x86::_mm_movemask_epi8(group) as u16;
-
-                eprintln!("matches = {:b}", matches);
-                eprintln!("empty = {:b}", empty);
+                // let empty = x86::_mm_movemask_epi8(group) as u16;
 
                 GroupQuery {
+                    group,
                     matches,
-                    empty,
+                    // empty,
                 }
             }
         }
@@ -157,15 +160,22 @@ mod group_query {
 
         #[inline]
         pub fn any_empty(&self) -> bool {
-            self.empty != 0
+            // self.empty != 0
+            unsafe {
+                x86::_mm_movemask_epi8(self.group) != 0
+            }
         }
 
         #[inline]
         pub fn first_empty(&self) -> Option<usize> {
-            if self.empty == 0 {
+            let empty = unsafe {
+                x86::_mm_movemask_epi8(self.group) as u16
+            };
+
+            if empty == 0 {
                 None
             } else {
-                Some(self.empty.trailing_zeros() as usize)
+                Some(empty.trailing_zeros() as usize)
             }
         }
     }
@@ -190,10 +200,7 @@ mod group_query {
     }
 }
 
-
-
 type GroupQuery = group_query::GroupQuery;
-
 
 struct PropeSeq {
     index: usize,
@@ -225,8 +232,20 @@ fn group_starting_at(control_bytes: &[u8], index: usize) -> &[u8; GROUP_SIZE] {
 impl<'a, K: ByteArray, V: ByteArray, H: HashFn> SwissTable<'a, K, V, H> {
 
     #[inline]
+    pub fn new(control: &'a [u8], data: &'a [Entry<K, V>], _mod_mask: usize) -> SwissTable<'a, K, V, H> {
+        debug_assert!(data.len().is_power_of_two());
+        debug_assert!(control.len() == data.len() + GROUP_SIZE);
+
+        SwissTable {
+            control,
+            data,
+            _hash_fn: PhantomData::default(),
+        }
+    }
+
+    #[inline]
     pub fn find(&self, key: &K) -> Option<&V> {
-        debug_assert!(self.data.len().is_power_of_two());
+        assert!(self.data.len().is_power_of_two());
         debug_assert!(self.control.len() == self.data.len() + GROUP_SIZE);
 
         let mask = self.data.len() - 1;
@@ -239,24 +258,31 @@ impl<'a, K: ByteArray, V: ByteArray, H: HashFn> SwissTable<'a, K, V, H> {
                 group_starting_at(self.control, ps.index), h2);
 
             for m in group_query.matches_iter() {
-                if self.data[ps.index + m].key == *key {
-                    return Some(&self.data[ps.index + m].value);
+                let index = (ps.index + m) & mask;
+
+                if likely(self.data[index].key == *key) {
+                    return Some(&self.data[index].value);
                 }
             }
 
-            if group_query.any_empty() {
+            if likely(group_query.any_empty()) {
                 return None;
             }
 
             ps.advance(mask);
         }
     }
+
+    #[inline]
+    pub(crate) fn iter(&'a self) -> RawIter<'a, K, V> {
+        RawIter::new(self.control, self.data)
+    }
 }
 
 pub(crate) fn new_empty_with_slot_count<K: ByteArray, V: ByteArray>(slot_count: usize) -> (Vec<u8>, Vec<Entry<K, V>>) {
 
-    assert!(slot_count.is_power_of_two());
-    assert!(slot_count % GROUP_SIZE == 0);
+    debug_assert!(slot_count.is_power_of_two());
+    debug_assert!(slot_count % GROUP_SIZE == 0);
 
     let data = vec![Entry::default(); slot_count];
     let control = vec![0b1000_0000u8; slot_count + GROUP_SIZE];
@@ -271,6 +297,18 @@ pub(crate) struct SwissTableMut<'a, K: ByteArray, V: ByteArray, H: HashFn> {
 }
 
 impl<'a, K: ByteArray, V: ByteArray, H: HashFn> SwissTableMut<'a, K, V, H> {
+
+    #[inline]
+    pub fn new(control: &'a mut [u8], data: &'a mut [Entry<K, V>], _mod_mask: usize) -> SwissTableMut<'a, K, V, H> {
+        debug_assert!(data.len().is_power_of_two());
+        debug_assert!(control.len() == data.len() + GROUP_SIZE);
+
+        SwissTableMut {
+            control,
+            data,
+            _hash_fn: PhantomData::default(),
+        }
+    }
 
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> bool {
@@ -288,22 +326,26 @@ impl<'a, K: ByteArray, V: ByteArray, H: HashFn> SwissTableMut<'a, K, V, H> {
                 group_starting_at(self.control, ps.index), h2);
 
             for m in group_query.matches_iter() {
-                let entry = &mut self.data[ps.index + m];
+                let index = (ps.index + m) & mask;
+
+                let entry = &mut self.data[index];
 
                 if entry.key == key {
                     entry.value = value;
+                    assert_eq!(self.control[..GROUP_SIZE], self.control[self.data.len() .. ]);
                     return false
                 }
             }
 
             if let Some(first_empty) = group_query.first_empty() {
-                let index = ps.index + first_empty;
+                let index = (ps.index + first_empty) & mask;
                 self.data[index] = Entry { key, value };
                 self.control[index] = h2;
 
                 if index < GROUP_SIZE {
                     let first_mirror = self.data.len();
-                    self.control[first_mirror + first_empty] = h2;
+                    self.control[first_mirror + index] = h2;
+                    debug_assert_eq!(self.control[..GROUP_SIZE], self.control[self.data.len() .. ]);
                 }
 
                 return true;
@@ -393,6 +435,59 @@ impl_byte_array!(31);
 impl_byte_array!(32);
 
 
+
+pub(crate) struct RawIter<'a, K, V>
+where
+    K: ByteArray,
+    V: ByteArray,
+{
+    metadata: &'a [EntryMetadata],
+    data: &'a [Entry<K, V>],
+    current_index: usize,
+}
+
+impl<'a, K, V> RawIter<'a, K, V>
+where
+    K: ByteArray,
+    V: ByteArray,
+{
+    pub(crate) fn new(metadata: &'a [EntryMetadata], data: &'a [Entry<K, V>]) -> RawIter<'a, K, V> {
+        debug_assert!(data.len().is_power_of_two());
+        debug_assert!(metadata.len() == data.len() + GROUP_SIZE);
+        RawIter {
+            metadata,
+            data,
+            current_index: 0,
+        }
+    }
+}
+
+impl<'a, K, V> Iterator for RawIter<'a, K, V>
+where
+    K: ByteArray,
+    V: ByteArray,
+{
+    type Item = (EntryMetadata, &'a Entry<K, V>);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.current_index == self.data.len() {
+                return None;
+            }
+
+            let index = self.current_index;
+
+            self.current_index += 1;
+
+            let entry_metadata = self.metadata[index];
+            if !is_empty_or_deleted(entry_metadata) {
+                return Some((entry_metadata, &self.data[index]));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,7 +507,7 @@ mod tests {
                 _hash_fn: PhantomData::default(),
             };
 
-            assert!(table.insert(x, x));
+            debug_assert!(table.insert(x, x));
 
             for (j, &y) in xs.iter().enumerate() {
                 let table: SwissTable<'_, _, _, FxHashFn> = SwissTable {
@@ -422,9 +517,9 @@ mod tests {
                 };
 
                 if j <= i {
-                    assert!(table.find(&y) == Some(&y));
+                    debug_assert!(table.find(&y) == Some(&y));
                 } else {
-                    assert!(table.find(&y) == None);
+                    debug_assert!(table.find(&y) == None);
                 }
 
             }

@@ -55,9 +55,12 @@
 //! }
 //! ```
 
+
+#![feature(core_intrinsics)]
+
 mod error;
 mod fxhash;
-mod raw_table;
+// mod raw_table;
 mod serialize;
 mod unhash;
 mod swisstable;
@@ -65,7 +68,9 @@ mod swisstable;
 pub use crate::fxhash::FxHashFn;
 pub use crate::unhash::UnHashFn;
 
-use crate::raw_table::{ByteArray, Entry, EntryMetadata, RawIter, RawTable, RawTableMut};
+use crate::swisstable::{ByteArray, Entry, EntryMetadata,
+    RawIter,
+    SwissTable as RawTable , SwissTableMut as RawTableMut};
 use std::io::Cursor;
 use std::marker::PhantomData;
 
@@ -129,6 +134,7 @@ impl<C: Config> HashTableOwned<C> {
         assert!(max_load_factor_percent > 0);
 
         let slots_needed = slots_needed(item_count, max_load_factor_percent);
+        let slots_needed = std::cmp::max(slots_needed, 16);
         let slots_needed = slots_needed.checked_next_power_of_two().unwrap();
         assert!(slots_needed > 0);
 
@@ -137,7 +143,7 @@ impl<C: Config> HashTableOwned<C> {
 
         HashTableOwned {
             _config: PhantomData::default(),
-            entry_metadata: vec![EntryMetadata::default(); slots_needed],
+            entry_metadata: vec![0b1000_0000; slots_needed + 16],
             entry_data: vec![Entry::default(); slots_needed],
             mod_mask,
             max_load_factor_percent,
@@ -238,8 +244,9 @@ impl<C: Config> HashTableOwned<C> {
         {
             let mut new_table = new_table.as_raw_mut();
 
-            for (entry_metadata, entry_data) in self.as_raw().iter() {
-                new_table.insert_entry(entry_metadata, *entry_data);
+            for (_entry_metadata, entry_data) in self.as_raw().iter() {
+                // new_table.insert_entry(entry_metadata, *entry_data);
+                new_table.insert(entry_data.key, entry_data.value);
             }
         }
 
@@ -257,7 +264,7 @@ impl<C: Config> HashTableOwned<C> {
     }
 
     pub fn serialize_to_vec(&self) -> Vec<u8> {
-        let bytes_needed = serialize::bytes_needed::<C>(self.entry_metadata.len());
+        let bytes_needed = serialize::bytes_needed::<C>(self.entry_data.len());
         let mut cursor = Cursor::new(Vec::with_capacity(bytes_needed));
         self.serialize(&mut cursor).unwrap();
         cursor.into_inner()
@@ -285,17 +292,17 @@ impl<C: Config> HashTableOwned<C> {
     }
 }
 
-impl<C: Config> std::fmt::Debug for HashTableOwned<C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(
-            f,
-            "(item_count={}, mod_mask={:x}, max_item_count={}, max_load_factor={})",
-            self.item_count, self.mod_mask, self.max_item_count, self.max_load_factor_percent
-        )?;
+// impl<C: Config> std::fmt::Debug for HashTableOwned<C> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         writeln!(
+//             f,
+//             "(item_count={}, mod_mask={:x}, max_item_count={}, max_load_factor={})",
+//             self.item_count, self.mod_mask, self.max_item_count, self.max_load_factor_percent
+//         )?;
 
-        writeln!(f, "{:?}", self.as_raw())
-    }
-}
+//         writeln!(f, "{:?}", self.as_raw())
+//     }
+// }
 
 /// This type provides a cheap to construct readonly view on a persisted
 /// hash table.

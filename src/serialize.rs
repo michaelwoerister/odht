@@ -1,6 +1,6 @@
 use crate::error::Error;
-use crate::raw_table::RawTable;
-use crate::raw_table::{Entry, EntryMetadata};
+use crate::swisstable::SwissTable as RawTable;
+use crate::swisstable::{Entry, EntryMetadata};
 use crate::Config;
 use std::{
     convert::TryInto,
@@ -71,7 +71,7 @@ impl Header {
     }
 
     fn data_offset(&self) -> isize {
-        (HEADER_SIZE + self.slot_count() * size_of::<EntryMetadata>()) as isize
+        (HEADER_SIZE + (self.slot_count() + 16) * size_of::<EntryMetadata>()) as isize
     }
 
     fn serialize(&self, w: &mut dyn std::io::Write) -> Result<(), Box<dyn std::error::Error>> {
@@ -101,12 +101,17 @@ impl Header {
         check_expected_size::<Header>(header.size_of_header)?;
 
         let bytes_per_entry =
-            size_of::<Entry<C::EncodedKey, C::EncodedValue>>() + size_of::<EntryMetadata>();
+            size_of::<Entry<C::EncodedKey, C::EncodedValue>>();
 
-        if data.len() < HEADER_SIZE + header.slot_count() * bytes_per_entry {
+        let metadata_size =
+            size_of::<EntryMetadata>() * (header.slot_count() + 16);
+
+        let expected_len = HEADER_SIZE + metadata_size + header.slot_count() * bytes_per_entry;
+
+        if data.len() < expected_len {
             return Err(Error(format!(
-                "Provided data not big enough for slot count {}",
-                header.slot_count()
+                "Provided data ({} bytes) not big enough for slot count {} ({} bytes)",
+                data.len(), header.slot_count(), expected_len
             )));
         }
 
@@ -141,10 +146,10 @@ pub(crate) fn serialize<C: Config>(
     max_load_factor_percent: u8,
     w: &mut dyn std::io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    assert!(metadata.len().is_power_of_two());
-    assert!(metadata.len() == entry_data.len());
+    assert!(entry_data.len().is_power_of_two());
+    assert!(metadata.len() == entry_data.len() + 16);
 
-    let header = Header::new::<C>(item_count, metadata.len(), max_load_factor_percent);
+    let header = Header::new::<C>(item_count, entry_data.len(), max_load_factor_percent);
 
     header.serialize(w)?;
 
@@ -172,7 +177,7 @@ pub(crate) fn deserialize<C: Config>(
     let raw_metadata: &[EntryMetadata] = unsafe {
         std::slice::from_raw_parts(
             data.as_ptr().offset(header.metadata_offset()) as *const EntryMetadata,
-            header.slot_count(),
+            header.slot_count() + 16,
         )
     };
 
@@ -184,18 +189,18 @@ pub(crate) fn deserialize<C: Config>(
         )
     };
 
-    let raw_table = RawTable::<'_, C::EncodedKey, C::EncodedValue, C::H>::new(
-        raw_metadata,
-        raw_data,
-        header.mod_mask(),
-    );
-    raw_table.sanity_check_hashes(3)?;
+    // let raw_table = RawTable::<'_, C::EncodedKey, C::EncodedValue, C::H>::new(
+    //     raw_metadata,
+    //     raw_data,
+    //     header.mod_mask(),
+    // );
+    // raw_table.sanity_check_hashes(3)?;
 
     Ok((header, raw_metadata, raw_data))
 }
 
 fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
-    assert!(slice.len().is_power_of_two());
+    // assert!(slice.len().is_power_of_two());
     assert!(align_of::<T>() == 1);
     let byte_ptr = slice.as_ptr() as *const u8;
     let num_bytes = slice.len() * size_of::<T>();
@@ -203,8 +208,8 @@ fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(byte_ptr, num_bytes) }
 }
 
-pub(crate) fn bytes_needed<C: Config>(capacity: usize) -> usize {
+pub(crate) fn bytes_needed<C: Config>(slot_count: usize) -> usize {
     let bytes_per_entry =
-        size_of::<EntryMetadata>() + size_of::<Entry<C::EncodedKey, C::EncodedValue>>();
-    HEADER_SIZE + bytes_per_entry * capacity
+        size_of::<Entry<C::EncodedKey, C::EncodedValue>>();
+    HEADER_SIZE + bytes_per_entry * slot_count + size_of::<EntryMetadata>() + (slot_count + 16)
 }
