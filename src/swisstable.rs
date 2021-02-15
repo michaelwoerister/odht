@@ -6,7 +6,7 @@ use crate::HashFn;
 use std::mem::size_of;
 use std::marker::PhantomData;
 
-use core::intrinsics::{likely, unlikely};
+use core::intrinsics::{likely};
 
 type HashValue = u32;
 
@@ -115,7 +115,6 @@ fn is_empty_or_deleted(control_byte: u8) -> bool {
 //     }
 // }
 
-
 #[cfg(all(
 target_feature = "sse2",
 any(target_arch = "x86", target_arch = "x86_64"),
@@ -128,9 +127,8 @@ mod group_query {
     use core::arch::x86_64 as x86;
 
      pub struct GroupQuery {
-        group: x86::__m128i,
         matches: u16,
-        // empty: u16,
+        empty: u16,
     }
 
     impl GroupQuery {
@@ -141,12 +139,11 @@ mod group_query {
                 let group = x86::_mm_loadu_si128(group as *const _ as *const x86::__m128i);
                 let cmp_byte = x86::_mm_cmpeq_epi8(group, x86::_mm_set1_epi8(h2 as i8));
                 let matches = x86::_mm_movemask_epi8(cmp_byte) as u16;
-                // let empty = x86::_mm_movemask_epi8(group) as u16;
+                let empty = x86::_mm_movemask_epi8(group) as u16;
 
                 GroupQuery {
-                    group,
                     matches,
-                    // empty,
+                    empty,
                 }
             }
         }
@@ -160,22 +157,15 @@ mod group_query {
 
         #[inline]
         pub fn any_empty(&self) -> bool {
-            // self.empty != 0
-            unsafe {
-                x86::_mm_movemask_epi8(self.group) != 0
-            }
+            self.empty != 0
         }
 
         #[inline]
         pub fn first_empty(&self) -> Option<usize> {
-            let empty = unsafe {
-                x86::_mm_movemask_epi8(self.group) as u16
-            };
-
-            if empty == 0 {
+            if self.empty == 0 {
                 None
             } else {
-                Some(empty.trailing_zeros() as usize)
+                Some(self.empty.trailing_zeros() as usize)
             }
         }
     }
@@ -260,7 +250,7 @@ impl<'a, K: ByteArray, V: ByteArray, H: HashFn> SwissTable<'a, K, V, H> {
             for m in group_query.matches_iter() {
                 let index = (ps.index + m) & mask;
 
-                if likely(self.data[index].key == *key) {
+                if likely(self.data[index].key.equals(key)) {
                     return Some(&self.data[index].value);
                 }
             }
@@ -339,7 +329,7 @@ impl<'a, K: ByteArray, V: ByteArray, H: HashFn> SwissTableMut<'a, K, V, H> {
 
             if let Some(first_empty) = group_query.first_empty() {
                 let index = (ps.index + first_empty) & mask;
-                self.data[index] = Entry { key, value };
+                self.data[index] = Entry::new(key, value);
                 self.control[index] = h2;
 
                 if index < GROUP_SIZE {
@@ -387,6 +377,7 @@ pub trait ByteArray:
     Sized + Copy + Eq + Clone + PartialEq + Default + std::fmt::Debug + 'static
 {
     fn as_slice(&self) -> &[u8];
+    fn equals(&self, other: &Self) -> bool;
 }
 
 macro_rules! impl_byte_array {
@@ -395,6 +386,35 @@ macro_rules! impl_byte_array {
             #[inline(always)]
             fn as_slice(&self) -> &[u8] {
                 &self[..]
+            }
+
+            // This custom implementation of comparing the fixed size arrays
+            // seems make a big difference for performance (at least for
+            // 16+ byte keys)
+            #[inline]
+            fn equals(&self, other: &Self) -> bool {
+                // Most branches here are optimized away at compile time
+                // because they depend on values known at compile time.
+
+                let u64s = std::mem::size_of::<Self>() / 8;
+
+                for i in 0 .. u64s {
+                    let offset = i * 8;
+                    let left = read_u64(&self[offset .. offset +8]);
+                    let right = read_u64(&other[offset .. offset +8]);
+
+                    if left != right {
+                        return false;
+                    }
+                }
+
+                return &self[u64s * 8 ..] == &other[u64s * 8 ..];
+
+                #[inline]
+                fn read_u64(bytes: &[u8]) -> u64 {
+                    use std::convert::TryInto;
+                    u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                }
             }
         }
     };

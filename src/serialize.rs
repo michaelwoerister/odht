@@ -1,5 +1,4 @@
 use crate::error::Error;
-use crate::swisstable::SwissTable as RawTable;
 use crate::swisstable::{Entry, EntryMetadata};
 use crate::Config;
 use std::{
