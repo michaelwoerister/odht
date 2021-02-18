@@ -127,7 +127,7 @@ pub struct HashTableOwned<C: Config> {
 
 impl<C: Config> Default for HashTableOwned<C> {
     fn default() -> Self {
-        HashTableOwned::with_capacity(1, 87)
+        HashTableOwned::with_capacity(5, 50)
     }
 }
 
@@ -265,6 +265,10 @@ impl<C: Config> HashTableOwned<C> {
             self.max_load_factor_percent,
             w,
         )
+    }
+
+    pub fn bytes_needed_for_serialization(&self) -> usize {
+        serialize::bytes_needed::<C>(self.entry_metadata.len())
     }
 
     pub fn serialize_to_vec(&self) -> Vec<u8> {

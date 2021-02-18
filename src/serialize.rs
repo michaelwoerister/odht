@@ -203,8 +203,9 @@ fn as_byte_slice<T>(slice: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(byte_ptr, num_bytes) }
 }
 
-pub(crate) fn bytes_needed<C: Config>(capacity: usize) -> usize {
+// TODO: unit test
+pub(crate) fn bytes_needed<C: Config>(slot_count: usize) -> usize {
     let bytes_per_entry =
         size_of::<EntryMetadata>() + size_of::<Entry<C::EncodedKey, C::EncodedValue>>();
-    HEADER_SIZE + bytes_per_entry * capacity
+    HEADER_SIZE + bytes_per_entry * slot_count
 }
