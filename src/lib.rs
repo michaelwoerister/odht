@@ -157,7 +157,7 @@ impl<C: Config> HashTableOwned<C> {
     /// Inserts the given key-value pair into the table.
     /// Grows the table if necessary.
     #[inline]
-    pub fn insert(&mut self, key: &C::Key, value: &C::Value) {
+    pub fn insert(&mut self, key: &C::Key, value: &C::Value) -> Option<C::Value> {
         if self.item_count == self.max_item_count {
             self.grow();
         }
@@ -167,8 +167,11 @@ impl<C: Config> HashTableOwned<C> {
         let encoded_key = C::encode_key(key);
         let raw_value = C::encode_value(value);
 
-        if self.as_raw_mut().insert(encoded_key, raw_value) {
+        if let Some(old_value) = self.as_raw_mut().insert(encoded_key, raw_value) {
+            Some(C::decode_value(&old_value))
+        } else {
             self.item_count += 1;
+            None
         }
     }
 

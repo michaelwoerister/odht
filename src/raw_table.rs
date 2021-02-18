@@ -322,7 +322,7 @@ where
     /// WARNING: This method assumes that there is free space in the hash table
     ///          somewhere. If there isn't it will end up in an infinite loop.
     #[inline]
-    pub(crate) fn insert(&mut self, key: K, value: V) -> bool {
+    pub(crate) fn insert(&mut self, key: K, value: V) -> Option<V> {
         let new_entry = Entry::new(key, value);
         let new_entry_metadata = EntryMetadata::occupied(make_hash::<K, H>(&key));
         self.insert_entry(new_entry_metadata, new_entry)
@@ -337,7 +337,7 @@ where
         &mut self,
         mut new_entry_metadata: EntryMetadata,
         mut new_entry: Entry<K, V>,
-    ) -> bool {
+    ) -> Option<V> {
         debug_assert!(!new_entry_metadata.is_empty());
         let mut i = desired_index(new_entry_metadata.hash(), self.mod_mask);
         let mut this_probe_distance = 0;
@@ -349,14 +349,15 @@ where
                 *hash_slot = new_entry_metadata;
                 self.data[i] = new_entry;
                 debug_assert!(!hash_slot.is_empty());
-                return true;
+                return None;
             } else if hash_slot.hash() == new_entry_metadata.hash() {
                 let entry_slot = &mut self.data[i];
 
                 if likely!(entry_slot.key.equals(&new_entry.key)) {
                     debug_assert!(hash_slot.hash() == new_entry_metadata.hash());
+                    let old_value = entry_slot.value;
                     entry_slot.value = new_entry.value;
-                    return false;
+                    return Some(old_value);
                 }
             }
 
@@ -702,7 +703,7 @@ mod tests {
             empty_entry(),
         ]);
 
-        assert!(table.insert([1, 1], [3]) == true);
+        assert_eq!(table.insert([1, 1], [3]), None);
 
         mk!(expected_table, RawTableMut, [
                 empty_entry(),
@@ -724,7 +725,7 @@ mod tests {
             empty_entry(),
         ]);
 
-        assert!(table.insert([1, 0], [3]) == false);
+        assert_eq!(table.insert([1, 0], [3]), Some([1]));
 
         mk!(expected_table, RawTableMut, [
                 empty_entry(),
@@ -746,7 +747,7 @@ mod tests {
             empty_entry(),
         ]);
 
-        assert!(table.insert([1, 1], [3]) == false);
+        assert_eq!(table.insert([1, 1], [3]), Some([2]));
 
         mk!(expected_table, RawTableMut, [
                 empty_entry(),
