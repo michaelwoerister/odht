@@ -109,7 +109,8 @@ pub trait HashFn: Eq {
 }
 
 /// `HashTableOwned` is used building and then persisting hash tables. It
-/// does provide methods for looking up values but
+/// does provide methods for looking up values
+#[derive(Clone)]
 pub struct HashTableOwned<C: Config> {
     _config: PhantomData<C>,
     entry_metadata: Vec<EntryMetadata>,
@@ -122,6 +123,12 @@ pub struct HashTableOwned<C: Config> {
     // We use integer math here as not to run into any issues with
     // platform-specific floating point math implementation.
     max_load_factor_percent: u8,
+}
+
+impl<C: Config> Default for HashTableOwned<C> {
+    fn default() -> Self {
+        HashTableOwned::with_capacity(1, 87)
+    }
 }
 
 impl<C: Config> HashTableOwned<C> {
@@ -303,6 +310,7 @@ impl<C: Config> std::fmt::Debug for HashTableOwned<C> {
 
 /// This type provides a cheap to construct readonly view on a persisted
 /// hash table.
+#[derive(Clone, Copy)]
 pub struct HashTable<'a, C: Config> {
     _config: PhantomData<C>,
     entry_metadata: &'a [EntryMetadata],
