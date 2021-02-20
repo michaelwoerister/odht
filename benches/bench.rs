@@ -97,7 +97,8 @@ fn generate_test_data(num_values: usize) -> Vec<(TestKey, u32)> {
         .collect()
 }
 
-const ITERATIONS: usize = 1000;
+const LOOKUP_ITERATIONS: usize = 10;
+const INSERT_ITERATIONS: usize = 10;
 
 fn bench_odht_fx_lookup(b: &mut test::Bencher, num_values: usize, load_factor_percent: u8) {
     let test_data = crate::generate_test_data(num_values);
@@ -116,7 +117,7 @@ fn bench_odht_fx_lookup(b: &mut test::Bencher, num_values: usize, load_factor_pe
     let table = HashTable::<FxConfig>::from_serialized(&serialized[1..]).unwrap();
 
     b.iter(|| {
-        for _ in 0..ITERATIONS {
+        for _ in 0..LOOKUP_ITERATIONS {
             for (index, &(key, value)) in test_data.iter().enumerate() {
                 if index_contained(index) {
                     assert!(table.get(&key) == Some(value));
@@ -128,12 +129,25 @@ fn bench_odht_fx_lookup(b: &mut test::Bencher, num_values: usize, load_factor_pe
     })
 }
 
+fn bench_odht_fx_insert(b: &mut test::Bencher, num_values: usize, load_factor_percent: u8) {
+    let test_data = crate::generate_test_data(num_values);
+
+    b.iter(|| {
+        for _ in 0..INSERT_ITERATIONS {
+            let mut table = HashTableOwned::<FxConfig>::with_capacity(10, load_factor_percent);
+            for (key, value) in test_data.iter() {
+                assert!(table.insert(key, value) == None);
+            }
+        }
+    })
+}
+
 fn bench_std_fx_lookup(b: &mut test::Bencher, num_values: usize) {
     let test_data = crate::generate_test_data(num_values);
     let table = crate::generate_std_hash_table(&test_data);
 
     b.iter(|| {
-        for _ in 0..ITERATIONS {
+        for _ in 0..LOOKUP_ITERATIONS {
             for (index, (key, value)) in test_data.iter().enumerate() {
                 if index_contained(index) {
                     assert!(table.get(key) == Some(value));
@@ -145,37 +159,81 @@ fn bench_std_fx_lookup(b: &mut test::Bencher, num_values: usize) {
     })
 }
 
+fn bench_std_fx_insert(b: &mut test::Bencher, num_values: usize) {
+    let test_data = crate::generate_test_data(num_values);
+
+    b.iter(|| {
+        for _ in 0..INSERT_ITERATIONS {
+            let mut table = FxHashMap::default();
+
+            for &(key, value) in test_data.iter() {
+                assert!(table.insert(key, value) == None);
+            }
+        }
+    })
+}
+
 macro_rules! bench {
     ($name:ident, $num_values:expr) => {
         mod $name {
             #[bench]
-            fn odht_fx_lookup_load_50(b: &mut test::Bencher) {
+            fn lookup_odht_fx_load_50(b: &mut test::Bencher) {
                 crate::bench_odht_fx_lookup(b, $num_values, 50);
             }
 
             #[bench]
-            fn odht_fx_lookup_load_70(b: &mut test::Bencher) {
+            fn lookup_odht_fx_load_70(b: &mut test::Bencher) {
                 crate::bench_odht_fx_lookup(b, $num_values, 70);
             }
 
             #[bench]
-            fn odht_fx_lookup_load_80(b: &mut test::Bencher) {
+            fn lookup_odht_fx_load_80(b: &mut test::Bencher) {
                 crate::bench_odht_fx_lookup(b, $num_values, 80);
             }
 
             #[bench]
-            fn odht_fx_lookup_load_90(b: &mut test::Bencher) {
+            fn lookup_odht_fx_load_90(b: &mut test::Bencher) {
                 crate::bench_odht_fx_lookup(b, $num_values, 90);
             }
 
             #[bench]
-            fn odht_fx_lookup_load_95(b: &mut test::Bencher) {
+            fn lookup_odht_fx_load_95(b: &mut test::Bencher) {
                 crate::bench_odht_fx_lookup(b, $num_values, 95);
             }
 
             #[bench]
-            fn std_fx_lookup(b: &mut test::Bencher) {
+            fn insert_odht_fx_load_50(b: &mut test::Bencher) {
+                crate::bench_odht_fx_insert(b, $num_values, 50);
+            }
+
+            #[bench]
+            fn insert_odht_fx_load_70(b: &mut test::Bencher) {
+                crate::bench_odht_fx_insert(b, $num_values, 70);
+            }
+
+            #[bench]
+            fn insert_odht_fx_load_80(b: &mut test::Bencher) {
+                crate::bench_odht_fx_insert(b, $num_values, 80);
+            }
+
+            #[bench]
+            fn insert_odht_fx_load_90(b: &mut test::Bencher) {
+                crate::bench_odht_fx_insert(b, $num_values, 90);
+            }
+
+            #[bench]
+            fn insert_odht_fx_load_95(b: &mut test::Bencher) {
+                crate::bench_odht_fx_insert(b, $num_values, 95);
+            }
+
+            #[bench]
+            fn lookup_std_fx(b: &mut test::Bencher) {
                 crate::bench_std_fx_lookup(b, $num_values);
+            }
+
+            #[bench]
+            fn insert_std_fx(b: &mut test::Bencher) {
+                crate::bench_std_fx_insert(b, $num_values);
             }
         }
     };

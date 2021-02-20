@@ -23,20 +23,6 @@ use std::{
     mem::{align_of, size_of},
 };
 
-#[cfg(feature = "nightly")]
-macro_rules! likely {
-    ($x:expr) => {
-        core::intrinsics::likely($x)
-    };
-}
-
-#[cfg(not(feature = "nightly"))]
-macro_rules! likely {
-    ($x:expr) => {
-        $x
-    };
-}
-
 /// Values of this type represent key-value pairs *as they are stored on-disk*.
 /// `#[repr(C)]` makes sure we have deterministic field order and the fields
 /// being byte arrays makes sure that there are no padding bytes, alignment is
@@ -342,6 +328,9 @@ where
         let mut i = desired_index(new_entry_metadata.hash(), self.mod_mask);
         let mut this_probe_distance = 0;
 
+        #[cfg(debug_assertions)]
+        let initial_index = i;
+
         loop {
             let hash_slot = &mut self.metadata[i];
 
@@ -371,6 +360,11 @@ where
 
             this_probe_distance += 1;
             i = (i + 1) & self.mod_mask;
+
+            #[cfg(debug_assertions)]
+            {
+                assert!(i != initial_index);
+            }
         }
     }
 }

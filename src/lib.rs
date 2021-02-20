@@ -57,6 +57,35 @@
 
 #![cfg_attr(feature = "nightly", feature(core_intrinsics))]
 
+
+#[cfg(feature = "nightly")]
+macro_rules! likely {
+    ($x:expr) => {
+        core::intrinsics::likely($x)
+    };
+}
+
+#[cfg(not(feature = "nightly"))]
+macro_rules! likely {
+    ($x:expr) => {
+        $x
+    };
+}
+
+#[cfg(feature = "nightly")]
+macro_rules! unlikely {
+    ($x:expr) => {
+        core::intrinsics::unlikely($x)
+    };
+}
+
+#[cfg(not(feature = "nightly"))]
+macro_rules! unlikely {
+    ($x:expr) => {
+        $x
+    };
+}
+
 mod error;
 mod fxhash;
 mod raw_table;
@@ -69,6 +98,7 @@ pub use crate::unhash::UnHashFn;
 use crate::raw_table::{ByteArray, Entry, EntryMetadata, RawIter, RawTable, RawTableMut};
 use std::io::Cursor;
 use std::marker::PhantomData;
+
 
 /// This trait provides a complete "configuration" for a hash table, i.e. it
 /// defines the key and value types, how these are encoded and what hash
@@ -127,7 +157,7 @@ pub struct HashTableOwned<C: Config> {
 
 impl<C: Config> Default for HashTableOwned<C> {
     fn default() -> Self {
-        HashTableOwned::with_capacity(5, 50)
+        HashTableOwned::with_capacity(5, 87)
     }
 }
 
@@ -165,7 +195,7 @@ impl<C: Config> HashTableOwned<C> {
     /// Grows the table if necessary.
     #[inline]
     pub fn insert(&mut self, key: &C::Key, value: &C::Value) -> Option<C::Value> {
-        if self.item_count == self.max_item_count {
+        if unlikely!(self.item_count == self.max_item_count) {
             self.grow();
         }
 
@@ -244,8 +274,14 @@ impl<C: Config> HashTableOwned<C> {
     #[inline(never)]
     #[cold]
     fn grow(&mut self) {
+        let initial_slot_count = self.entry_data.len();
+        let initial_item_count = self.item_count;
+        let initial_max_load_factor_percent = self.max_load_factor_percent;
+
         let mut new_table = Self::with_capacity(self.item_count * 2, self.max_load_factor_percent);
 
+        // Copy the entries over with the internal `insert_entry()` method,
+        // which allows us to do insertions without hashing everything again.
         {
             let mut new_table = new_table.as_raw_mut();
 
@@ -253,8 +289,15 @@ impl<C: Config> HashTableOwned<C> {
                 new_table.insert_entry(entry_metadata, *entry_data);
             }
         }
+        // We've been working only on the RawTable in the code block above, so
+        // need to update the item_count field manually.
+        new_table.item_count = self.item_count;
 
         *self = new_table;
+
+        assert!(self.entry_data.len() >= 2 * initial_slot_count);
+        assert_eq!(self.item_count, initial_item_count);
+        assert_eq!(self.max_load_factor_percent, initial_max_load_factor_percent);
     }
 
     pub fn serialize(&self, w: &mut dyn std::io::Write) -> Result<(), Box<dyn std::error::Error>> {
@@ -504,5 +547,15 @@ mod tests {
         assert_eq!(max_item_count(10, 50), 5);
         assert_eq!(max_item_count(11, 50), 5);
         assert_eq!(max_item_count(12, 50), 6);
+    }
+
+    #[test]
+    fn grow() {
+        let items = make_test_items(100);
+        let mut table = HashTableOwned::<TestConfig>::with_capacity(10, 87);
+
+        for (key, value) in items.iter() {
+            assert_eq!(table.insert(key, value), None);
+        }
     }
 }
